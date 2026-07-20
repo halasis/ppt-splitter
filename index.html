@@ -1518,36 +1518,157 @@
       const keepSlideIds = new Set(slideIndices.map(idx => AppState.slides[idx].id));
       const keepRIds = new Set(slideIndices.map(idx => AppState.slides[idx].rId));
 
-      // 步骤1：复制所有文件到新的 ZIP（文件较多，逐个异步复制）
-      const fileEntries = Object.entries(originalZip.files).filter(([_, f]) => !f.dir);
-      for (const [path, file] of fileEntries) {
-        // 跳过不需要的 slide XML 文件
-        if (path.startsWith('ppt/slides/slide') && path.endsWith('.xml')) {
-          // 提取 slide 编号，判断是否需要保留
-          const match = path.match(/slide(\d+)\.xml$/);
-          if (match) {
-            const slideNum = parseInt(match[1], 10);
-            // 找到对应的 slide 索引（slide1.xml 对应 index 0）
-            const slideIdx = slideNum - 1;
-            if (!slideIndices.includes(slideIdx)) {
-              continue; // 跳过未选中的 slide
+      // === 预先扫描：收集需要保留的文件路径 ===
+      const keepPaths = new Set();
+
+      // 1. 保留核心文件
+      keepPaths.add('ppt/presentation.xml');
+      keepPaths.add('ppt/_rels/presentation.xml.rels');
+      keepPaths.add('[Content_Types].xml');
+
+      // 2. 收集保留 slide 的文件路径和对应的关系文件
+      const keepSlidePaths = [];
+      for (const idx of slideIndices) {
+        const rId = AppState.slides[idx].rId;
+        const target = AppState.slideRels[rId];
+        if (target) {
+          const slidePath = 'ppt/' + target;
+          keepPaths.add(slidePath);
+          keepSlidePaths.push(slidePath);
+          // slide 的关系文件
+          const relsPath = slidePath.replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels';
+          keepPaths.add(relsPath);
+          // notesSlide（如果存在）
+          const notesPath = slidePath.replace('ppt/slides/slide', 'ppt/notesSlides/notesSlide');
+          keepPaths.add(notesPath);
+          // notesSlide 的关系文件
+          const notesRelsPath = notesPath.replace('ppt/notesSlides/', 'ppt/notesSlides/_rels/') + '.rels';
+          keepPaths.add(notesRelsPath);
+        }
+      }
+
+      // 3. 读取保留 slide 的关系文件，收集它们引用的媒体/布局/母版文件
+      for (const slidePath of keepSlidePaths) {
+        const relsPath = slidePath.replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels';
+        try {
+          const relsXml = await originalZip.file(relsPath).async('text');
+          const relRegex = /<Relationship[^>]*\sTarget="([^"]*)"[^>]*\s?\/?>/gi;
+          let m;
+          while ((m = relRegex.exec(relsXml)) !== null) {
+            const target = m[1];
+            if (target.startsWith('../')) {
+              // 相对路径：../slideLayouts/slideLayout1.xml -> ppt/slideLayouts/slideLayout1.xml
+              keepPaths.add('ppt/' + target.replace('../', ''));
+            } else if (target.startsWith('http')) {
+              // 外部链接，忽略
+            } else {
+              // 同目录相对路径
+              keepPaths.add(slidePath.substring(0, slidePath.lastIndexOf('/') + 1) + target);
+            }
+          }
+        } catch (e) { /* 关系文件可能不存在 */ }
+      }
+
+      // 4. 读取 presentation.xml.rels，收集 presentation 层面需要的文件（slideMaster、theme、view、presProps 等）
+      try {
+        const presRelsXml = await originalZip.file('ppt/_rels/presentation.xml.rels').async('text');
+        const relRegex = /<Relationship[^>]*\sTarget="([^"]*)"[^>]*\s?\/?>/gi;
+        let m;
+        while ((m = relRegex.exec(presRelsXml)) !== null) {
+          const target = m[1];
+          if (!target.startsWith('http')) {
+            keepPaths.add('ppt/' + target);
+            // 如果是 slideMaster，还要读取它的关系文件收集布局
+            if (target.startsWith('slideMasters/')) {
+              const masterPath = 'ppt/' + target;
+              const masterRelsPath = masterPath.replace('ppt/slideMasters/', 'ppt/slideMasters/_rels/') + '.rels';
+              keepPaths.add(masterRelsPath);
+              try {
+                const masterRelsXml = await originalZip.file(masterRelsPath).async('text');
+                const mRelRegex = /<Relationship[^>]*\sTarget="([^"]*)"[^>]*\s?\/?>/gi;
+                let mm;
+                while ((mm = mRelRegex.exec(masterRelsXml)) !== null) {
+                  const mt = mm[1];
+                  if (!mt.startsWith('http')) {
+                    if (mt.startsWith('../')) {
+                      keepPaths.add('ppt/' + mt.replace('../', ''));
+                    } else {
+                      keepPaths.add(masterPath.substring(0, masterPath.lastIndexOf('/') + 1) + mt);
+                    }
+                  }
+                }
+              } catch (e) { /* 忽略 */ }
+            }
+            // slideLayout 的关系文件
+            if (target.startsWith('slideLayouts/')) {
+              const layoutPath = 'ppt/' + target;
+              const layoutRelsPath = layoutPath.replace('ppt/slideLayouts/', 'ppt/slideLayouts/_rels/') + '.rels';
+              keepPaths.add(layoutRelsPath);
+              try {
+                const layoutRelsXml = await originalZip.file(layoutRelsPath).async('text');
+                const lRelRegex = /<Relationship[^>]*\sTarget="([^"]*)"[^>]*\s?\/?>/gi;
+                let lm;
+                while ((lm = lRelRegex.exec(layoutRelsXml)) !== null) {
+                  const lt = lm[1];
+                  if (!lt.startsWith('http')) {
+                    if (lt.startsWith('../')) {
+                      keepPaths.add('ppt/' + lt.replace('../', ''));
+                    } else {
+                      keepPaths.add(layoutPath.substring(0, layoutPath.lastIndexOf('/') + 1) + lt);
+                    }
+                  }
+                }
+              } catch (e) { /* 忽略 */ }
             }
           }
         }
-        // 跳过 notesSlides 中未选中 slide 对应的备注
-        if (path.startsWith('ppt/notesSlides/notesSlide')) {
-          const match = path.match(/notesSlide(\d+)\.xml$/);
-          if (match) {
-            const slideNum = parseInt(match[1], 10);
-            if (!slideIndices.includes(slideNum - 1)) continue;
-          }
-        }
+      } catch (e) { /* 忽略 */ }
 
+      // 5. 递归读取所有已保留文件的关系文件，确保深层依赖也被保留
+      const relPathsToCheck = Array.from(keepPaths).filter(p => p.endsWith('.rels'));
+      for (const relsPath of relPathsToCheck) {
+        try {
+          const relsXml = await originalZip.file(relsPath).async('text');
+          const relRegex = /<Relationship[^>]*\sTarget="([^"]*)"[^>]*\s?\/?>/gi;
+          let m;
+          while ((m = relRegex.exec(relsXml)) !== null) {
+            const target = m[1];
+            if (target.startsWith('http')) continue;
+            let resolved;
+            if (target.startsWith('../')) {
+              // 跨目录：../media/image1.png
+              const relDir = relsPath.substring(0, relsPath.lastIndexOf('/_rels/'));
+              const parentDir = relDir.substring(0, relDir.lastIndexOf('/'));
+              resolved = parentDir + '/' + target.replace('../', '');
+            } else {
+              // 同目录
+              resolved = relsPath.substring(0, relsPath.lastIndexOf('/_rels/')) + '/' + target;
+            }
+            if (!keepPaths.has(resolved)) {
+              keepPaths.add(resolved);
+              // 如果这个文件也有 .rels，后续会在循环中处理（但这里已经遍历完了，所以直接处理）
+              if (!resolved.endsWith('.rels')) {
+                const childRels = resolved.replace(/(\/[^\/]+)$/, '/_rels$1.rels');
+                if (originalZip.file(childRels)) {
+                  keepPaths.add(childRels);
+                }
+              }
+            }
+          }
+        } catch (e) { /* 忽略 */ }
+      }
+
+      // === 步骤1：只复制需要保留的文件 ===
+      const fileEntries = Object.entries(originalZip.files).filter(([_, f]) => !f.dir);
+      for (const [path, file] of fileEntries) {
+        if (!keepPaths.has(path)) {
+          continue; // 跳过未使用的文件
+        }
         const content = await file.async('uint8array');
         newZip.file(path, content);
       }
 
-      // 步骤2：修改 presentation.xml，只保留选中的 slide 引用
+      // === 步骤2：修改 presentation.xml，只保留选中的 slide 引用 ===
       const presXml = await newZip.file('ppt/presentation.xml').async('text');
       const presDoc = parser.parseFromString(presXml, 'application/xml');
       const sldIdLst = presDoc.querySelector('sldIdLst');
@@ -1561,7 +1682,7 @@
       }
       newZip.file('ppt/presentation.xml', serializer.serializeToString(presDoc));
 
-      // 步骤3：更新 [Content_Types].xml，移除已删除文件的 Override 声明
+      // === 步骤3：更新 [Content_Types].xml，移除已删除文件的 Override 声明 ===
       const ctXml = await newZip.file('[Content_Types].xml').async('text');
       const ctDoc = parser.parseFromString(ctXml, 'application/xml');
       const overrides = ctDoc.querySelectorAll('Override');
@@ -1585,7 +1706,7 @@
       });
       newZip.file('[Content_Types].xml', serializer.serializeToString(ctDoc));
 
-      // 步骤4：重新打包为 PPTX Blob
+      // === 步骤4：重新打包为 PPTX Blob ===
       return await newZip.generateAsync({
         type: 'blob',
         mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'

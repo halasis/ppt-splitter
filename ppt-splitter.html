@@ -1,0 +1,2013 @@
+<!--
+  在线 PPT 课件拆分工具
+  纯前端实现，浏览器本地解析，零上传
+  作者：AI Assistant
+  日期：2026-07-16
+-->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <!-- 视口设置，适配不同设备 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PPT 课件拆分工具</title>
+
+  <!-- ==================== CDN 依赖引入 ==================== -->
+  <!-- JSZip：解压和打包 ZIP/PPTX 文件（核心依赖） -->
+  <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+  <!-- html2canvas：HTML 转 Canvas，用于导出 PNG -->
+  <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <!-- jsPDF：浏览器端生成 PDF -->
+  <script src="https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <!-- FileSaver.js：触发浏览器文件下载 -->
+  <script src="https://unpkg.com/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+
+  <!-- ==================== 页面样式 ==================== -->
+  <style>
+    /* ---------- CSS 变量：配色方案（柔和教学风格） ---------- */
+    :root {
+      --primary: #4a90a4;         /* 主色调：柔和蓝绿 */
+      --primary-light: #e8f4f8;   /* 主色浅版：用于悬停背景 */
+      --primary-dark: #3a7a8c;    /* 主色深版：用于按钮按下 */
+      --accent: #f4a261;          /* 强调色：暖橙，用于高亮 */
+      --bg: #f5f7fa;              /* 页面背景色 */
+      --surface: #ffffff;         /* 卡片/面板背景色 */
+      --ink: #2c3e50;             /* 主文字颜色 */
+      --muted: #7f8c8d;           /* 次要文字颜色 */
+      --border: #e1e8ed;          /* 边框颜色 */
+      --success: #27ae60;         /* 成功状态 */
+      --error: #e74c3c;           /* 错误状态 */
+      --warning: #f39c12;         /* 警告状态 */
+      --shadow: 0 2px 8px rgba(0,0,0,0.08);  /* 默认阴影 */
+      --shadow-hover: 0 4px 16px rgba(0,0,0,0.12);  /* 悬停阴影 */
+      --radius: 8px;              /* 统一圆角 */
+    }
+
+    /* ---------- 全局重置 ---------- */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* ---------- 顶部导航栏 ---------- */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: var(--shadow);
+    }
+    .header-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--primary);
+    }
+    .header-brand svg {
+      width: 28px; height: 28px;
+      fill: var(--primary);
+    }
+    .header-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    /* ---------- 按钮组件 ---------- */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: var(--radius);
+      border: 1px solid transparent;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      background: var(--surface);
+      color: var(--ink);
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+
+    /* 主要按钮样式 */
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+    }
+    .btn-primary:hover {
+      background: var(--primary-dark);
+      box-shadow: var(--shadow-hover);
+    }
+    /* 次要按钮样式 */
+    .btn-secondary {
+      background: var(--surface);
+      border-color: var(--border);
+      color: var(--muted);
+    }
+    .btn-secondary:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+    /* 危险/重置按钮 */
+    .btn-danger {
+      background: #fff;
+      border-color: var(--error);
+      color: var(--error);
+    }
+    .btn-danger:hover {
+      background: #fdf2f2;
+    }
+    /* 按钮禁用状态 */
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+    }
+
+    /* ---------- 主容器 ---------- */
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    /* ---------- 上传区域 ---------- */
+    .upload-area {
+      background: var(--surface);
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 60px 40px;
+      text-align: center;
+      transition: all 0.3s ease;
+      cursor: pointer;
+    }
+    .upload-area:hover {
+      border-color: var(--primary);
+      background: var(--primary-light);
+    }
+    .upload-area.drag-over {
+      border-color: var(--primary);
+      background: var(--primary-light);
+      transform: scale(1.01);
+    }
+    .upload-area.hidden { display: none; }
+    .upload-icon {
+      width: 64px; height: 64px;
+      margin-bottom: 16px;
+      fill: var(--muted);
+      transition: fill 0.3s;
+    }
+    .upload-area:hover .upload-icon { fill: var(--primary); }
+    .upload-title {
+      font-size: 1.15rem;
+      font-weight: 500;
+      margin-bottom: 8px;
+    }
+    .upload-hint {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .upload-error {
+      color: var(--error);
+      margin-top: 12px;
+      font-size: 0.9rem;
+      display: none;
+    }
+    .upload-error.show { display: block; }
+
+    /* ---------- 解析进度区域 ---------- */
+    .progress-area {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 40px;
+      text-align: center;
+      display: none;
+    }
+    .progress-area.show { display: block; }
+    .spinner {
+      width: 48px; height: 48px;
+      border: 4px solid var(--border);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 20px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .progress-text {
+      font-size: 1rem;
+      margin-bottom: 12px;
+    }
+    .progress-bar {
+      width: 100%;
+      max-width: 400px;
+      height: 8px;
+      background: var(--border);
+      border-radius: 4px;
+      margin: 0 auto;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary), #5ba8bd);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+    .progress-percent {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    /* ---------- 工作区（预览+工具栏） ---------- */
+    .workspace { display: none; }
+    .workspace.show { display: block; }
+
+    /* ---------- 工具栏 ---------- */
+    .toolbar {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .toolbar-divider {
+      width: 1px;
+      height: 24px;
+      background: var(--border);
+    }
+    .toolbar-label {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .toolbar-select {
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 0.85rem;
+      background: var(--surface);
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .toolbar-select:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+    .toolbar-checkboxes {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .toolbar-checkboxes label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    .toolbar-info {
+      margin-left: auto;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .toolbar-info strong {
+      color: var(--primary);
+    }
+
+    /* ---------- 主体内容区（左右分栏） ---------- */
+    .main-layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 16px;
+    }
+
+    /* ---------- 左侧章节面板 ---------- */
+    .chapter-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      position: sticky;
+      top: 72px;
+      max-height: calc(100vh - 100px);
+      display: flex;
+      flex-direction: column;
+    }
+    .chapter-panel h3 {
+      font-size: 1rem;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .chapter-list {
+      list-style: none;
+      overflow-y: auto;
+      flex: 1;
+      min-height: 0;
+      padding-right: 4px;
+    }
+    .chapter-item {
+      margin-bottom: 4px;
+    }
+    .chapter-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .chapter-header:hover {
+      background: var(--primary-light);
+    }
+    .chapter-header.active {
+      background: var(--primary-light);
+      color: var(--primary);
+      font-weight: 500;
+    }
+    .chapter-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+    }
+    .chapter-toggle .arrow {
+      transition: transform 0.2s;
+      font-size: 0.75rem;
+    }
+    .chapter-toggle.expanded .arrow {
+      transform: rotate(90deg);
+    }
+    .chapter-name {
+      font-size: 0.9rem;
+    }
+    .chapter-pages {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .chapter-select-btn {
+      font-size: 0.75rem;
+      color: var(--primary);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .chapter-select-btn:hover {
+      background: var(--primary-light);
+    }
+    .chapter-slides {
+      padding-left: 24px;
+      margin-top: 4px;
+      display: none;
+    }
+    .chapter-slides.show { display: block; }
+    .chapter-slide-tag {
+      display: inline-block;
+      font-size: 0.75rem;
+      color: var(--muted);
+      background: var(--bg);
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin: 2px;
+    }
+    .no-chapters {
+      color: var(--muted);
+      font-size: 0.85rem;
+      text-align: center;
+      padding: 20px 0;
+    }
+
+    /* ---------- 右侧缩略图区域 ---------- */
+    .preview-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      min-height: 400px;
+    }
+    .preview-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .preview-header h3 {
+      font-size: 1rem;
+    }
+    .preview-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 16px;
+    }
+    .slide-card {
+      position: relative;
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      background: var(--bg);
+    }
+    .slide-card:hover {
+      border-color: var(--primary);
+      box-shadow: var(--shadow-hover);
+    }
+    .slide-card.selected {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--primary-light);
+    }
+    .slide-card .slide-checkbox {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+      z-index: 2;
+    }
+    .slide-card .slide-thumb {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .slide-card .slide-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .slide-card .slide-text-preview {
+      width: 100%;
+      height: 100%;
+      padding: 12px 10px;
+      font-size: 0.72rem;
+      line-height: 1.6;
+      color: var(--ink);
+      background: linear-gradient(135deg, #f8fafc 0%, #eef2f7 100%);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 6;
+      -webkit-box-orient: vertical;
+      word-break: break-all;
+      border-bottom: 2px solid var(--border);
+    }
+    .slide-card .slide-placeholder {
+      color: var(--muted);
+      font-size: 0.85rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+    }
+    .slide-card .slide-page-num {
+      text-align: center;
+      padding: 6px;
+      font-size: 0.85rem;
+      color: var(--muted);
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+    }
+    .slide-card .slide-download {
+      position: absolute;
+      bottom: 32px;
+      right: 8px;
+      width: 28px;
+      height: 28px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.2s;
+      z-index: 2;
+    }
+    .slide-card:hover .slide-download {
+      opacity: 1;
+    }
+    .slide-download:hover {
+      background: var(--primary-light);
+      border-color: var(--primary);
+    }
+
+    /* ---------- 导出进度弹窗 ---------- */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.4);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 32px;
+      width: 90%;
+      max-width: 420px;
+      text-align: center;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+    }
+    .modal-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+    .modal-progress-bar {
+      width: 100%;
+      height: 10px;
+      background: var(--border);
+      border-radius: 5px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+    .modal-progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+      border-radius: 5px;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+    .modal-status {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    /* ---------- Toast 提示 ---------- */
+    .toast-container {
+      position: fixed;
+      top: 80px;
+      right: 24px;
+      z-index: 300;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .toast {
+      background: var(--surface);
+      border-left: 4px solid var(--primary);
+      padding: 12px 20px;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-hover);
+      font-size: 0.9rem;
+      animation: slideIn 0.3s ease;
+      max-width: 320px;
+    }
+    .toast.error { border-left-color: var(--error); }
+    .toast.warning { border-left-color: var(--warning); }
+    .toast.success { border-left-color: var(--success); }
+    @keyframes slideIn {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+
+    /* ---------- 响应式适配 ---------- */
+    @media (max-width: 1024px) {
+      .main-layout {
+        grid-template-columns: 220px 1fr;
+      }
+      .preview-grid {
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      }
+    }
+    @media (max-width: 768px) {
+      .main-layout {
+        grid-template-columns: 1fr;
+      }
+      .chapter-panel {
+        position: static;
+        max-height: 300px;
+      }
+      .toolbar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .toolbar-info {
+        margin-left: 0;
+      }
+      .preview-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    /* ---------- 隐藏的文件输入 ---------- */
+    #fileInput { display: none; }
+
+    /* ---------- 辅助类 ---------- */
+    .text-primary { color: var(--primary); }
+    .text-muted { color: var(--muted); }
+    .text-error { color: var(--error); }
+    .text-success { color: var(--success); }
+    .hidden { display: none !important; }
+  </style>
+</head>
+
+<body>
+  <!-- ==================== 顶部导航栏 ==================== -->
+  <header class="header">
+    <div class="header-brand">
+      <!-- PPT 图标 -->
+      <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-9 14H7v-2h3v2zm4 0h-3v-2h3v2zm0-3H7v-2h7v2zm0-3H7V9h7v2z"/></svg>
+      <span>PPT 课件拆分工具</span>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-danger" id="btnReset" title="清空所有数据，回到初始状态">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+        重置
+      </button>
+    </div>
+  </header>
+
+  <!-- ==================== 主容器 ==================== -->
+  <main class="container">
+    <!-- ---------- 文件上传区域 ---------- -->
+    <div class="upload-area" id="uploadArea">
+      <input type="file" id="fileInput" accept=".pptx">
+      <svg class="upload-icon" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+      <div class="upload-title">拖拽或点击上传 PPTX 文件</div>
+      <div class="upload-hint">仅支持 .pptx 格式，最大 500MB，文件不上传服务器</div>
+      <div class="upload-error" id="uploadError"></div>
+    </div>
+
+    <!-- ---------- 解析进度区域 ---------- -->
+    <div class="progress-area" id="progressArea">
+      <div class="spinner"></div>
+      <div class="progress-text" id="progressText">正在解析文件...</div>
+      <div class="progress-bar">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+      <div class="progress-percent" id="progressPercent">0%</div>
+    </div>
+
+    <!-- ---------- 工作区（预览+工具栏） ---------- -->
+    <div class="workspace" id="workspace">
+      <!-- 工具栏 -->
+      <div class="toolbar">
+        <div class="toolbar-group">
+          <button class="btn btn-secondary" id="btnSelectAll">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.11 0 2-.9 2-2V5c0-1.1-.89-2-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+            全选
+          </button>
+          <button class="btn btn-secondary" id="btnDeselectAll">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2z"/></svg>
+            取消全选
+          </button>
+        </div>
+        <div class="toolbar-divider"></div>
+        <div class="toolbar-group">
+          <span class="toolbar-label">拆分模式：</span>
+          <select class="toolbar-select" id="splitMode">
+            <option value="page">按单页拆分</option>
+            <option value="chapter">按章节拆分</option>
+          </select>
+        </div>
+        <div class="toolbar-divider"></div>
+        <div class="toolbar-group">
+          <span class="toolbar-label">导出格式：</span>
+          <div class="toolbar-checkboxes">
+            <label><input type="checkbox" id="exportPptx" checked> PPTX</label>
+            <label><input type="checkbox" id="exportPng"> PNG</label>
+            <label><input type="checkbox" id="exportPdf"> PDF</label>
+          </div>
+        </div>
+        <div class="toolbar-divider"></div>
+        <div class="toolbar-group">
+          <button class="btn btn-primary" id="btnDownload">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+            打包下载
+          </button>
+        </div>
+        <div class="toolbar-info">
+          已选 <strong id="selectedCount">0</strong> 页 / 共 <span id="totalCount">0</span> 页
+        </div>
+      </div>
+
+      <!-- 主体内容：左侧章节 + 右侧缩略图 -->
+      <div class="main-layout">
+        <!-- 左侧章节面板 -->
+        <aside class="chapter-panel" id="chapterPanel">
+          <h3>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="var(--primary)"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+            章节列表
+          </h3>
+          <ul class="chapter-list" id="chapterList">
+            <!-- 章节项由 JS 动态生成 -->
+          </ul>
+          <div class="no-chapters hidden" id="noChapters">未检测到章节分节</div>
+        </aside>
+
+        <!-- 右侧缩略图面板 -->
+        <div class="preview-panel">
+          <div class="preview-header">
+            <h3>页面预览</h3>
+            <span class="text-muted" id="fileName"></span>
+          </div>
+          <div class="preview-grid" id="previewGrid">
+            <!-- 缩略图卡片由 JS 动态生成 -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ==================== 导出进度弹窗 ==================== -->
+  <div class="modal-overlay" id="exportModal">
+    <div class="modal">
+      <div class="modal-title">正在导出文件...</div>
+      <div class="modal-progress-bar">
+        <div class="modal-progress-fill" id="modalProgressFill"></div>
+      </div>
+      <div class="modal-status" id="modalStatus">准备中...</div>
+      <button class="btn btn-secondary" id="btnCancelExport" style="margin-top:16px;">取消</button>
+    </div>
+  </div>
+
+  <!-- ==================== Toast 提示容器 ==================== -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- ==================== JavaScript 核心逻辑 ==================== -->
+  <script>
+    // ==================== 全局状态管理 ====================
+    const AppState = {
+      file: null,           // 当前上传的文件对象
+      zip: null,            // JSZip 实例（解压后的 PPTX）
+      slides: [],           // 所有幻灯片数据 {index, rId, name, selected}
+      chapters: [],         // 章节数据 {name, startIndex, endIndex, slides[]}
+      thumbnails: [],       // 缩略图数据 URL
+      slideTexts: [],       // 每页文本摘要（PPTXjs 失败时的降级预览）
+      slideRels: {},        // rId -> 文件名映射
+      isParsing: false,     // 是否正在解析
+      isExporting: false,   // 是否正在导出
+      cancelExport: false   // 是否请求取消导出
+    };
+
+    // ==================== DOM 元素缓存 ====================
+    const $uploadArea = document.getElementById('uploadArea');
+    const $fileInput = document.getElementById('fileInput');
+    const $uploadError = document.getElementById('uploadError');
+    const $progressArea = document.getElementById('progressArea');
+    const $progressText = document.getElementById('progressText');
+    const $progressFill = document.getElementById('progressFill');
+    const $progressPercent = document.getElementById('progressPercent');
+    const $workspace = document.getElementById('workspace');
+    const $chapterList = document.getElementById('chapterList');
+    const $noChapters = document.getElementById('noChapters');
+    const $previewGrid = document.getElementById('previewGrid');
+    const $selectedCount = document.getElementById('selectedCount');
+    const $totalCount = document.getElementById('totalCount');
+    const $fileName = document.getElementById('fileName');
+    const $exportModal = document.getElementById('exportModal');
+    const $modalProgressFill = document.getElementById('modalProgressFill');
+    const $modalStatus = document.getElementById('modalStatus');
+    const $toastContainer = document.getElementById('toastContainer');
+
+    // ==================== 工具函数 ====================
+
+    /**
+     * 显示 Toast 提示
+     * @param {string} message - 提示内容
+     * @param {string} type - 类型：success/error/warning
+     * @param {number} duration - 显示时长(ms)
+     */
+    function showToast(message, type = 'success', duration = 3000) {
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      toast.textContent = message;
+      $toastContainer.appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(100%)';
+        toast.style.transition = 'all 0.3s ease';
+        setTimeout(() => toast.remove(), 300);
+      }, duration);
+    }
+
+    /**
+     * 更新解析/导出进度条
+     * @param {number} percent - 0-100
+     * @param {string} text - 进度文字
+     */
+    function setProgress(percent, text) {
+      $progressFill.style.width = percent + '%';
+      $progressPercent.textContent = Math.round(percent) + '%';
+      if (text) $progressText.textContent = text;
+    }
+
+    /**
+     * 更新导出弹窗进度
+     * @param {number} percent - 0-100
+     * @param {string} status - 状态文字
+     */
+    function setExportProgress(percent, status) {
+      $modalProgressFill.style.width = percent + '%';
+      if (status) $modalStatus.textContent = status;
+    }
+
+    /**
+     * 更新已选页面计数显示
+     */
+    function updateSelectedCount() {
+      const count = AppState.slides.filter(s => s.selected).length;
+      $selectedCount.textContent = count;
+    }
+
+    // ==================== 文件上传模块 ====================
+
+    /**
+     * 处理文件选择/拖拽
+     * 执行多道校验：空文件、扩展名、大小、ZIP完整性
+     * @param {File} file - 用户选择的文件
+     */
+    async function handleFile(file) {
+      // 重置错误提示
+      $uploadError.classList.remove('show');
+      $uploadError.textContent = '';
+
+      // 校验1：空文件检测
+      if (!file || file.size === 0) {
+        showError('文件为空，请选择有效的 PPTX 文件');
+        return;
+      }
+
+      // 校验2：文件扩展名必须是 .pptx
+      if (!file.name.toLowerCase().endsWith('.pptx')) {
+        showError('本工具仅支持 .pptx 格式，请先将 .ppt 文件另存为 .pptx 后再上传');
+        return;
+      }
+
+      // 校验3：文件大小不超过 500MB
+      const MAX_SIZE = 500 * 1024 * 1024;
+      if (file.size > MAX_SIZE) {
+        showError('文件大小超过 500MB 限制，请压缩图片后重试');
+        return;
+      }
+
+      // 校验4：读取文件前4个字节，检测是否为 ZIP 格式（魔数 PK\x03\x04）
+      // 注意：不能只用 file.slice + JSZip.loadAsync 来"预检"，因为 ZIP 的中央目录在文件尾部，
+      // 截断读取会导致 JSZip 误判为损坏。真正的完整性校验在 startParsing 中用完整文件进行。
+      try {
+        const header = await file.slice(0, 4).arrayBuffer();
+        const bytes = new Uint8Array(header);
+        // ZIP 本地文件头魔数：0x50 0x4B 0x03 0x04
+        if (bytes[0] !== 0x50 || bytes[1] !== 0x4B || bytes[2] !== 0x03 || bytes[3] !== 0x04) {
+          showError('文件不是有效的 PPTX 格式（ZIP 文件头不匹配），请检查后重试');
+          return;
+        }
+      } catch (e) {
+        showError('无法读取文件头部，请检查文件是否有效');
+        return;
+      }
+
+      // 校验通过，保存文件并进入解析阶段
+      AppState.file = file;
+      startParsing(file);
+    }
+
+    /**
+     * 显示上传错误
+     * @param {string} msg - 错误信息
+     */
+    function showError(msg) {
+      $uploadError.textContent = msg;
+      $uploadError.classList.add('show');
+      showToast(msg, 'error', 5000);
+      // 3秒后自动清除错误提示
+      setTimeout(() => {
+        $uploadError.classList.remove('show');
+      }, 3000);
+    }
+
+    // 点击上传区域触发文件选择
+    $uploadArea.addEventListener('click', (e) => {
+      if (e.target !== $fileInput) $fileInput.click();
+    });
+
+    // 文件选择变化时处理
+    $fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleFile(e.target.files[0]);
+      }
+    });
+
+    // 拖拽进入上传区域
+    $uploadArea.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      $uploadArea.classList.add('drag-over');
+    });
+
+    // 拖拽离开上传区域
+    $uploadArea.addEventListener('dragleave', () => {
+      $uploadArea.classList.remove('drag-over');
+    });
+
+    // 拖拽释放文件
+    $uploadArea.addEventListener('drop', (e) => {
+      e.preventDefault();
+      $uploadArea.classList.remove('drag-over');
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        handleFile(files[0]);
+      }
+    });
+
+    // ==================== 解析模块 ====================
+
+    /**
+     * 开始解析 PPTX 文件
+     * @param {File} file - PPTX 文件
+     */
+    async function startParsing(file) {
+      AppState.isParsing = true;
+      // 切换界面：隐藏上传区，显示进度区
+      $uploadArea.classList.add('hidden');
+      $progressArea.classList.add('show');
+      setProgress(0, '正在读取文件...');
+
+      try {
+        // 步骤1：用 JSZip 解压完整文件
+        setProgress(10, '正在解压文件...');
+        AppState.zip = await JSZip.loadAsync(file);
+        await sleep(200);
+
+        // 步骤2：解析 presentation.xml 获取幻灯片列表和章节
+        setProgress(30, '正在解析幻灯片结构...');
+        await parsePresentationXml();
+        await sleep(200);
+
+        // 步骤3：用 PPTXjs 渲染预览（获取缩略图）
+        setProgress(50, '正在生成页面预览...');
+        await renderPreviews(file);
+        await sleep(200);
+
+        // 步骤3.5：无论 PPTXjs 是否成功，都提取文本摘要作为降级预览
+        setProgress(75, '正在提取页面内容...');
+        await extractSlideTexts();
+        await sleep(100);
+
+        // 步骤4：渲染界面
+        setProgress(90, '正在初始化界面...');
+        renderChapters();
+        renderSlideGrid();
+        $fileName.textContent = file.name;
+        $totalCount.textContent = AppState.slides.length;
+        updateSelectedCount();
+        await sleep(200);
+
+        // 完成
+        setProgress(100, '解析完成！');
+        showToast(`成功解析 "${file.name}"，共 ${AppState.slides.length} 页`);
+
+        // 延迟切换到工作区
+        setTimeout(() => {
+          $progressArea.classList.remove('show');
+          $workspace.classList.add('show');
+          AppState.isParsing = false;
+        }, 500);
+
+      } catch (err) {
+        console.error('解析失败:', err);
+        AppState.isParsing = false;
+        setProgress(0, '解析失败');
+
+        // 分类错误信息，给用户更准确的提示
+        let msg = err.message || '未知错误';
+        if (msg.toLowerCase().includes('encrypted')) {
+          msg = '文件已加密或受密码保护，请移除密码后重试';
+        } else if (msg.includes('Corrupted zip') || msg.includes('zip') || msg.includes('End of Central Directory')) {
+          msg = '文件已损坏或不是有效的 PPTX 文件，请检查后重试';
+        } else if (msg.includes('presentation.xml') || msg.includes('Content_Types')) {
+          msg = 'PPTX 内部文件缺失，文件可能已损坏';
+        } else {
+          msg = '文件解析失败：' + msg;
+        }
+        showToast(msg, 'error', 5000);
+
+        // 回到上传界面
+        $progressArea.classList.remove('show');
+        $uploadArea.classList.remove('hidden');
+      }
+    }
+
+    /**
+     * 解析 presentation.xml 和关系文件，提取幻灯片列表、章节信息和 rId 映射
+     * 全部使用正则匹配，避免 querySelectorAll 对 XML 命名空间标签的不兼容问题
+     */
+    async function parsePresentationXml() {
+      const zip = AppState.zip;
+
+      // 读取 presentation.xml
+      const presentationXml = await zip.file('ppt/presentation.xml').async('text');
+
+      // 提取所有 sldId 节点（兼容 p:sldId 和 sldId 两种写法）
+      // 格式：<p:sldId id="256" r:id="rId2"/>
+      AppState.slides = [];
+      const sldIdRegex = /<(?:p\:)?sldId[^>]*\sid="([^"]*)"[^>]*\sr:id="([^"]*)"[^>]*\/?>/gi;
+      let match;
+      let slideIndex = 0;
+      while ((match = sldIdRegex.exec(presentationXml)) !== null) {
+        AppState.slides.push({
+          index: slideIndex++,
+          id: match[1],
+          rId: match[2],
+          selected: false
+        });
+      }
+
+      if (AppState.slides.length === 0) {
+        throw new Error('未检测到任何幻灯片，文件可能已损坏');
+      }
+
+      // 读取关系文件，建立 rId -> Target 文件名的映射（如 rId2 -> slides/slide1.xml）
+      AppState.slideRels = {};
+      try {
+        const relsXml = await zip.file('ppt/_rels/presentation.xml.rels').async('text');
+        // 格式：<Relationship Id="rId2" Type=".../slide" Target="slides/slide1.xml"/>
+        const relRegex = /<Relationship[^>]*\sId="([^"]*)"[^>]*\sTarget="([^"]*)"[^>]*\/?>/gi;
+        while ((match = relRegex.exec(relsXml)) !== null) {
+          const rId = match[1];
+          const target = match[2];
+          AppState.slideRels[rId] = target;
+        }
+      } catch (e) {
+        console.warn('无法读取幻灯片关系文件:', e);
+      }
+
+      // 提取章节分节信息
+      // PPTX 章节信息在 presentation.xml 的 <p:extLst> 内，使用 p14 命名空间：
+      //   <p14:sectionLst xmlns:p14="...powerpoint/2010/main">
+      //     <p14:section name="第一章">
+      //       <p14:sldId id="256"/>
+      //       ...
+      //     </p14:section>
+      //   </p14:sectionLst>
+      // 需要兼容 p: / p14: / 无前缀 三种写法
+      AppState.chapters = [];
+
+      // 用正则提取所有 section 节点（兼容任意命名空间前缀：p: / p14: / 无前缀）
+      // 捕获组1=属性，捕获组2=标签内部内容
+      const sectionRegex = /<(\w*\:?)section\s+([^>]*)>([\s\S]*?)<\/\1section>/gi;
+      let sectionMatch;
+      let sectionIdx = 0;
+      while ((sectionMatch = sectionRegex.exec(presentationXml)) !== null) {
+        const attrs = sectionMatch[2] || '';
+        const inner = sectionMatch[3] || '';
+
+        // 提取 name 属性
+        const nameMatch = attrs.match(/name="([^"]*)"/);
+        const name = nameMatch ? nameMatch[1] : '章节 ' + (sectionIdx + 1);
+
+        // 提取该 section 内所有的 sldId 引用（兼容任意命名空间前缀）
+        const slideIds = [];
+        const sldIdInSecRegex = /<\w*\:?sldId[^>]*\sid="([^"]*)"[^>]*\/?>/gi;
+        let sldIdMatch;
+        while ((sldIdMatch = sldIdInSecRegex.exec(inner)) !== null) {
+          slideIds.push(sldIdMatch[1]);
+        }
+
+        // 将 slide ID 映射到索引
+        const slideIndices = [];
+        slideIds.forEach(sid => {
+          const sld = AppState.slides.find(s => s.id === sid);
+          if (sld) slideIndices.push(sld.index);
+        });
+
+        if (slideIndices.length > 0) {
+          AppState.chapters.push({
+            name: name,
+            startIndex: Math.min(...slideIndices),
+            endIndex: Math.max(...slideIndices),
+            slideIndices: slideIndices,
+            expanded: false
+          });
+        }
+        sectionIdx++;
+      }
+
+      console.log('章节识别结果:', AppState.chapters.length, '个章节',
+        AppState.chapters.map(c => c.name + '(' + c.slideIndices.length + '页)'));
+
+      // 如果没有章节，默认创建一个包含所有幻灯片的"全部页面"章节
+      if (AppState.chapters.length === 0 && AppState.slides.length > 0) {
+        AppState.chapters.push({
+          name: '全部页面',
+          startIndex: 0,
+          endIndex: AppState.slides.length - 1,
+          slideIndices: AppState.slides.map(s => s.index),
+          expanded: true
+        });
+      }
+    }
+
+    /**
+     * 从每个 slide 的 XML 中提取文本内容，生成页面摘要用于预览
+     * 使用正则替代 querySelectorAll，兼容带/不带命名空间前缀的 XML
+     */
+    async function extractSlideTexts() {
+      const zip = AppState.zip;
+      AppState.slideTexts = [];
+
+      for (let i = 0; i < AppState.slides.length; i++) {
+        try {
+          const rId = AppState.slides[i].rId;
+          const target = AppState.slideRels[rId];
+          if (!target) { AppState.slideTexts.push(''); continue; }
+          const slidePath = 'ppt/' + target;
+          const slideFile = zip.file(slidePath);
+          if (!slideFile) { AppState.slideTexts.push(''); continue; }
+          const xml = await slideFile.async('text');
+
+          // 用正则提取所有 <a:t> 或 <t> 标签内的文本（兼容不同命名空间写法）
+          const texts = [];
+          const regex = /<(?:a\:)?t[^>]*>([\s\S]*?)<\/(?:a\:)?t>/gi;
+          let match;
+          while ((match = regex.exec(xml)) !== null) {
+            const t = match[1].replace(/<[^>]*>/g, '').trim(); // 去除内部嵌套标签
+            if (t) texts.push(t);
+          }
+          const fullText = texts.join(' ').replace(/\s+/g, ' ').trim();
+          AppState.slideTexts.push(fullText.substring(0, 100) + (fullText.length > 100 ? '...' : ''));
+        } catch (e) {
+          console.warn('提取第', i + 1, '页文本失败:', e);
+          AppState.slideTexts.push('');
+        }
+      }
+    }
+
+    /**
+     * 从 PPTX 中提取每页的嵌入图片作为缩略图
+     * 先尝试提取 PPTX 全局缩略图（docProps/thumbnail.jpeg），
+     * 再逐页从 slide 关系文件中提取嵌入图片
+     */
+    async function extractSlideImages() {
+      const zip = AppState.zip;
+      AppState.thumbnails = [];
+
+      // 尝试提取 PPTX 全局缩略图（很多 PPT 都有）
+      try {
+        const thumbFile = zip.file('docProps/thumbnail.jpeg') || zip.file('docProps/thumbnail.png');
+        if (thumbFile) {
+          const blob = await thumbFile.async('blob');
+          // 全局缩略图只作为第 1 页的预览
+          AppState.thumbnails.push(URL.createObjectURL(blob));
+          // 其余页面留空，后续再逐页提取
+          for (let i = 1; i < AppState.slides.length; i++) {
+            AppState.thumbnails.push(null);
+          }
+          return; // 有全局缩略图就先用着
+        }
+      } catch (e) {
+        console.warn('全局缩略图提取失败:', e);
+      }
+
+      // 逐页从 slide 的关系文件中提取嵌入图片
+      for (let i = 0; i < AppState.slides.length; i++) {
+        try {
+          const rId = AppState.slides[i].rId;
+          const target = AppState.slideRels[rId];
+          if (!target) { AppState.thumbnails.push(null); continue; }
+
+          // 构造该 slide 的关系文件路径
+          // target 形如 "slides/slide1.xml"，需要变为 "slides/_rels/slide1.xml.rels"
+          const parts = target.split('/');
+          const slideFileName = parts.pop(); // "slide1.xml"
+          const relsPath = 'ppt/' + parts.join('/') + '/_rels/' + slideFileName + '.rels';
+          const relsFile = zip.file(relsPath);
+
+          if (!relsFile) { AppState.thumbnails.push(null); continue; }
+
+          const relsXml = await relsFile.async('text');
+          // 用正则提取所有图片类型的 Relationship
+          // 格式：<Relationship Id="rId1" Type=".../image" Target="../media/image1.png"/>
+          const imgRelRegex = /<Relationship[^>]*\sType="[^"]*image[^"]*"[^>]*\sTarget="([^"]*)"[^>]*\/?>/gi;
+          let imgFound = false;
+          let imgRelMatch;
+          while ((imgRelMatch = imgRelRegex.exec(relsXml)) !== null) {
+            const tgt = imgRelMatch[1];
+
+            // 解析图片的完整路径
+            // Target 可能是 "../media/image1.png" 或 "image1.png"
+            let imgFullPath;
+            if (tgt.startsWith('../')) {
+              // 相对于 ppt/slides/ 向上一级 = ppt/，所以去掉 ../
+              imgFullPath = 'ppt/' + tgt.substring(3);
+            } else {
+              // 相对于当前 rels 所在目录（ppt/slides/_rels/），实际文件在 ppt/slides/
+              imgFullPath = 'ppt/' + parts.join('/') + '/' + tgt;
+            }
+
+            const imgFile = zip.file(imgFullPath);
+            if (imgFile) {
+              const blob = await imgFile.async('blob');
+              const url = URL.createObjectURL(blob);
+              AppState.thumbnails.push(url);
+              imgFound = true;
+              break; // 每页只取第一张图片
+            }
+          }
+          if (!imgFound) AppState.thumbnails.push(null);
+        } catch (e) {
+          console.warn('提取第', i + 1, '页图片失败:', e);
+          AppState.thumbnails.push(null);
+        }
+      }
+    }
+
+    /**
+     * 生成缩略图（核心预览函数）
+     * 策略：从 PPTX 的 docProps/thumbnail.jpeg 提取封面缩略图；
+     *       对每页 slide，从其关系文件中提取嵌入图片作为预览
+     */
+    async function renderPreviews(file) {
+      try {
+        await extractSlideImages();
+      } catch (e) {
+        console.warn('图片提取失败:', e);
+        AppState.thumbnails = AppState.slides.map(() => null);
+      }
+    }
+
+    // ==================== 界面渲染模块 ====================
+
+    /**
+     * 渲染章节列表到左侧面板
+     */
+    function renderChapters() {
+      $chapterList.innerHTML = '';
+
+      if (AppState.chapters.length === 0) {
+        $noChapters.classList.remove('hidden');
+        return;
+      }
+      $noChapters.classList.add('hidden');
+
+      AppState.chapters.forEach((chapter, cIdx) => {
+        const li = document.createElement('li');
+        li.className = 'chapter-item';
+
+        const header = document.createElement('div');
+        header.className = 'chapter-header';
+        const isExpanded = chapter.expanded ? 'expanded' : '';
+        header.innerHTML = `
+          <div class="chapter-toggle ${isExpanded}" data-index="${cIdx}">
+            <span class="arrow">▶</span>
+            <span class="chapter-name">${escapeHtml(chapter.name)}</span>
+          </div>
+          <span class="chapter-pages">${chapter.slideIndices.length} 页</span>
+          <button class="chapter-select-btn" data-index="${cIdx}">全选</button>
+        `;
+
+        // 点击章节标题展开/收起
+        const toggle = header.querySelector('.chapter-toggle');
+        toggle.addEventListener('click', () => {
+          chapter.expanded = !chapter.expanded;
+          toggle.classList.toggle('expanded', chapter.expanded);
+          slidesDiv.classList.toggle('show', chapter.expanded);
+        });
+
+        // 点击全选按钮选中该章节所有页面
+        const selectBtn = header.querySelector('.chapter-select-btn');
+        selectBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleChapterSelection(cIdx);
+        });
+
+        // 章节下的幻灯片标签
+        const slidesDiv = document.createElement('div');
+        slidesDiv.className = 'chapter-slides' + (chapter.expanded ? ' show' : '');
+        slidesDiv.innerHTML = chapter.slideIndices.map(si =>
+          `<span class="chapter-slide-tag">P${si + 1}</span>`
+        ).join('');
+
+        li.appendChild(header);
+        li.appendChild(slidesDiv);
+        $chapterList.appendChild(li);
+      });
+    }
+
+    /**
+     * 渲染缩略图网格到右侧面板
+     * 若已生成缩略图则显示图片，否则显示占位符
+     */
+    function renderSlideGrid() {
+      $previewGrid.innerHTML = '';
+
+      AppState.slides.forEach((slide, idx) => {
+        const card = document.createElement('div');
+        card.className = 'slide-card' + (slide.selected ? ' selected' : '');
+        card.dataset.index = idx;
+
+        // 优先显示缩略图，无缩略图则显示文本摘要，最后才显示占位文字
+        const thumbUrl = AppState.thumbnails[idx];
+        const slideText = AppState.slideTexts[idx];
+        let thumbHtml;
+        if (thumbUrl) {
+          // 有图片时显示图片，加载失败则降级到文本
+          thumbHtml = '<img src="' + thumbUrl + '" alt="第 ' + (idx + 1) + ' 页" loading="lazy">';
+        } else if (slideText) {
+          // 无图片但有文本，显示文本摘要卡片
+          thumbHtml = '<div class="slide-text-preview">' + escapeHtml(slideText) + '</div>';
+        } else {
+          // 无图片也无文本，显示占位符
+          thumbHtml = '<div class="slide-placeholder">第 ' + (idx + 1) + ' 页</div>';
+        }
+
+        card.innerHTML = `
+          <input type="checkbox" class="slide-checkbox" ${slide.selected ? 'checked' : ''}>
+          <div class="slide-thumb">
+            ${thumbHtml}
+          </div>
+          <div class="slide-page-num">第 ${idx + 1} 页</div>
+          <div class="slide-download" title="单独下载此页">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+          </div>
+        `;
+
+        // 点击卡片切换选中状态（排除复选框和下载按钮区域）
+        card.addEventListener('click', (e) => {
+          if (e.target.classList.contains('slide-checkbox') ||
+              e.target.closest('.slide-download')) return;
+          toggleSlideSelection(idx);
+        });
+
+        // 复选框变化事件
+        const checkbox = card.querySelector('.slide-checkbox');
+        checkbox.addEventListener('change', () => {
+          toggleSlideSelection(idx);
+        });
+
+        // 单独下载按钮事件
+        const downloadBtn = card.querySelector('.slide-download');
+        downloadBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          downloadSingleSlide(idx);
+        });
+
+        $previewGrid.appendChild(card);
+      });
+    }
+
+    // ==================== 选择交互模块 ====================
+
+    /**
+     * 切换单个幻灯片的选中状态
+     * @param {number} idx - 幻灯片索引
+     */
+    function toggleSlideSelection(idx) {
+      const slide = AppState.slides[idx];
+      slide.selected = !slide.selected;
+
+      // 更新卡片样式
+      const card = $previewGrid.querySelector(`.slide-card[data-index="${idx}"]`);
+      if (card) {
+        card.classList.toggle('selected', slide.selected);
+        card.querySelector('.slide-checkbox').checked = slide.selected;
+      }
+
+      updateSelectedCount();
+    }
+
+    /**
+     * 切换章节的选中状态（全选/取消全选该章节所有页）
+     * @param {number} cIdx - 章节索引
+     */
+    function toggleChapterSelection(cIdx) {
+      const chapter = AppState.chapters[cIdx];
+      const allSelected = chapter.slideIndices.every(si => AppState.slides[si].selected);
+
+      chapter.slideIndices.forEach(si => {
+        AppState.slides[si].selected = !allSelected;
+      });
+
+      // 批量更新 UI
+      chapter.slideIndices.forEach(si => {
+        const card = $previewGrid.querySelector(`.slide-card[data-index="${si}"]`);
+        if (card) {
+          card.classList.toggle('selected', AppState.slides[si].selected);
+          card.querySelector('.slide-checkbox').checked = AppState.slides[si].selected;
+        }
+      });
+
+      // 更新按钮文字
+      const btn = $chapterList.querySelector(`.chapter-select-btn[data-index="${cIdx}"]`);
+      if (btn) btn.textContent = allSelected ? '全选' : '取消';
+
+      updateSelectedCount();
+    }
+
+    /**
+     * 全选所有页面
+     */
+    function selectAll() {
+      AppState.slides.forEach(s => s.selected = true);
+      refreshSelectionUI();
+      updateSelectedCount();
+    }
+
+    /**
+     * 取消全选所有页面
+     */
+    function deselectAll() {
+      AppState.slides.forEach(s => s.selected = false);
+      refreshSelectionUI();
+      updateSelectedCount();
+    }
+
+    /**
+     * 刷新所有选中状态的 UI
+     */
+    function refreshSelectionUI() {
+      AppState.slides.forEach((slide, idx) => {
+        const card = $previewGrid.querySelector(`.slide-card[data-index="${idx}"]`);
+        if (card) {
+          card.classList.toggle('selected', slide.selected);
+          card.querySelector('.slide-checkbox').checked = slide.selected;
+        }
+      });
+    }
+
+    // 工具栏按钮事件绑定
+    document.getElementById('btnSelectAll').addEventListener('click', selectAll);
+    document.getElementById('btnDeselectAll').addEventListener('click', deselectAll);
+
+    // ==================== 重置功能 ====================
+
+    /**
+     * 重置所有状态，回到初始界面
+     */
+    function resetAll() {
+      if (AppState.isParsing || AppState.isExporting) {
+        showToast('当前正在处理中，请稍后再试', 'warning');
+        return;
+      }
+
+      // 清空状态
+      AppState.file = null;
+      AppState.zip = null;
+      AppState.slides = [];
+      AppState.chapters = [];
+      AppState.thumbnails = [];
+
+      // 清空 UI
+      $fileInput.value = '';
+      $uploadError.classList.remove('show');
+      $chapterList.innerHTML = '';
+      $previewGrid.innerHTML = '';
+      $fileName.textContent = '';
+      $selectedCount.textContent = '0';
+      $totalCount.textContent = '0';
+
+      // 切换界面显示
+      $workspace.classList.remove('show');
+      $progressArea.classList.remove('show');
+      $uploadArea.classList.remove('hidden');
+
+      showToast('已清空所有数据');
+    }
+
+    document.getElementById('btnReset').addEventListener('click', resetAll);
+
+    // ==================== PPTX 拆分核心引擎 ====================
+
+    /**
+     * 从原始 PPTX 中提取指定 slide，生成新的 PPTX Blob
+     * 原理：复制原 ZIP 中所有共享资源，只保留选中 slide 的 XML，更新清单文件
+     * @param {number[]} slideIndices - 要保留的 slide 索引数组
+     * @returns {Promise<Blob>} - 新生成的 PPTX Blob
+     */
+    async function extractSlidesToPptx(slideIndices) {
+      const originalZip = AppState.zip;
+      const newZip = new JSZip();
+      const parser = new DOMParser();
+      const serializer = new XMLSerializer();
+
+      // 需要保留的 slide id 和 rId
+      const keepSlideIds = new Set(slideIndices.map(idx => AppState.slides[idx].id));
+      const keepRIds = new Set(slideIndices.map(idx => AppState.slides[idx].rId));
+
+      // 步骤1：复制所有文件到新的 ZIP（文件较多，逐个异步复制）
+      const fileEntries = Object.entries(originalZip.files).filter(([_, f]) => !f.dir);
+      for (const [path, file] of fileEntries) {
+        // 跳过不需要的 slide XML 文件
+        if (path.startsWith('ppt/slides/slide') && path.endsWith('.xml')) {
+          // 提取 slide 编号，判断是否需要保留
+          const match = path.match(/slide(\d+)\.xml$/);
+          if (match) {
+            const slideNum = parseInt(match[1], 10);
+            // 找到对应的 slide 索引（slide1.xml 对应 index 0）
+            const slideIdx = slideNum - 1;
+            if (!slideIndices.includes(slideIdx)) {
+              continue; // 跳过未选中的 slide
+            }
+          }
+        }
+        // 跳过 notesSlides 中未选中 slide 对应的备注
+        if (path.startsWith('ppt/notesSlides/notesSlide')) {
+          const match = path.match(/notesSlide(\d+)\.xml$/);
+          if (match) {
+            const slideNum = parseInt(match[1], 10);
+            if (!slideIndices.includes(slideNum - 1)) continue;
+          }
+        }
+
+        const content = await file.async('uint8array');
+        newZip.file(path, content);
+      }
+
+      // 步骤2：修改 presentation.xml，只保留选中的 slide 引用
+      const presXml = await newZip.file('ppt/presentation.xml').async('text');
+      const presDoc = parser.parseFromString(presXml, 'application/xml');
+      const sldIdLst = presDoc.querySelector('sldIdLst');
+      if (sldIdLst) {
+        const allSldIds = Array.from(sldIdLst.querySelectorAll('sldId'));
+        allSldIds.forEach(sldId => {
+          if (!keepSlideIds.has(sldId.getAttribute('id'))) {
+            sldId.remove();
+          }
+        });
+      }
+      newZip.file('ppt/presentation.xml', serializer.serializeToString(presDoc));
+
+      // 步骤3：更新 [Content_Types].xml，移除已删除文件的 Override 声明
+      const ctXml = await newZip.file('[Content_Types].xml').async('text');
+      const ctDoc = parser.parseFromString(ctXml, 'application/xml');
+      const overrides = ctDoc.querySelectorAll('Override');
+      const removedSlideNames = new Set();
+      AppState.slides.forEach(s => {
+        if (!keepSlideIds.has(s.id)) {
+          const target = AppState.slideRels[s.rId];
+          if (target) removedSlideNames.add(target.replace('slides/', ''));
+        }
+      });
+
+      overrides.forEach(ov => {
+        const partName = ov.getAttribute('PartName') || '';
+        // 检查是否是被删除的 slide 或 notesSlide
+        for (const name of removedSlideNames) {
+          if (partName.includes(name) || partName.includes(name.replace('slide', 'notesSlide'))) {
+            ov.remove();
+            break;
+          }
+        }
+      });
+      newZip.file('[Content_Types].xml', serializer.serializeToString(ctDoc));
+
+      // 步骤4：重新打包为 PPTX Blob
+      return await newZip.generateAsync({
+        type: 'blob',
+        mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+      });
+    }
+
+    // ==================== PNG / PDF 渲染引擎 ====================
+
+    /**
+     * 重新渲染指定 slide 并用 html2canvas 生成高清 PNG DataURL
+     * @param {number} slideIdx - slide 索引
+     * @param {number} scale - 渲染缩放比例（默认 2 表示 2x 高清）
+     * @returns {Promise<string|null>} - PNG DataURL 或 null
+     */
+    async function renderSlideToPng(slideIdx, scale = 2) {
+      return new Promise((resolve) => {
+        const file = AppState.file;
+        const fileReader = new FileReader();
+
+        fileReader.onload = async function(e) {
+          const arrayBuffer = e.target.result;
+          const tempContainer = document.createElement('div');
+          tempContainer.style.cssText = 'position:fixed;left:-9999px;top:0;width:1920px;height:auto;visibility:hidden;z-index:-1;';
+          document.body.appendChild(tempContainer);
+
+          try {
+            // 使用 PPTXjs 渲染
+            if (typeof $ !== 'undefined' && $.fn && $.fn.pptxToHtml) {
+              $(tempContainer).pptxToHtml({
+                pptxFileUrl: arrayBuffer,
+                slideMode: true,
+                slideWidth: 1920,
+                showLoader: false
+              });
+            } else if (typeof PPTXjs !== 'undefined') {
+              const pptx = new PPTXjs();
+              pptx.load(arrayBuffer, { slideMode: true, slideContainer: tempContainer, slideWidth: 1920 });
+            } else {
+              throw new Error('PPTXjs 未加载');
+            }
+
+            await sleep(2500);
+
+            // 找到目标 slide 元素
+            let slideDivs = Array.from(tempContainer.querySelectorAll('.slide'));
+            if (slideDivs.length === 0) {
+              slideDivs = Array.from(tempContainer.querySelectorAll('div[class*="slide"], div[class*="Slide"]'))
+                .filter(el => el.children.length > 2);
+            }
+
+            const targetDiv = slideDivs[slideIdx];
+            if (!targetDiv) {
+              throw new Error('未找到第 ' + (slideIdx + 1) + ' 页');
+            }
+
+            // 临时恢复可见性以便 html2canvas 捕获
+            const originalCss = targetDiv.style.cssText;
+            targetDiv.style.cssText = originalCss + ';position:relative;left:0;top:0;visibility:visible;display:block;';
+
+            const canvas = await html2canvas(targetDiv, {
+              scale: scale,
+              useCORS: true,
+              allowTaint: true,
+              backgroundColor: '#ffffff',
+              logging: false,
+              width: targetDiv.scrollWidth || 1920,
+              height: targetDiv.scrollHeight || 1080
+            });
+
+            targetDiv.style.cssText = originalCss;
+            document.body.removeChild(tempContainer);
+            resolve(canvas.toDataURL('image/png'));
+          } catch (err) {
+            console.error('PNG 渲染失败 page', slideIdx + 1, err);
+            if (document.body.contains(tempContainer)) {
+              document.body.removeChild(tempContainer);
+            }
+            resolve(null);
+          }
+        };
+
+        fileReader.onerror = () => resolve(null);
+        fileReader.readAsArrayBuffer(file);
+      });
+    }
+
+    /**
+     * 将多张 PNG DataURL 合并为一个 PDF 文件
+     * @param {string[]} pngDataUrls - PNG DataURL 数组
+     * @returns {Promise<Blob>} - PDF Blob
+     */
+    async function createPdfFromPngs(pngDataUrls) {
+      const { jsPDF } = window.jspdf;
+      // 创建 A4 横向的 PDF，尺寸约为 1920x1080 pt 的 16:9 比例
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: [1920, 1080] });
+
+      for (let i = 0; i < pngDataUrls.length; i++) {
+        if (i > 0) pdf.addPage([1920, 1080], 'landscape');
+        const imgData = pngDataUrls[i];
+        // 将图片铺满整个 PDF 页面
+        pdf.addImage(imgData, 'PNG', 0, 0, 1920, 1080);
+      }
+
+      return pdf.output('blob');
+    }
+
+    // ==================== 导出模块 ====================
+
+    /**
+     * 打包下载选中的页面
+     * 根据用户选择的拆分模式和导出格式，生成 ZIP 压缩包并触发下载
+     */
+    async function downloadPackage() {
+      const selectedIndices = AppState.slides
+        .map((s, i) => s.selected ? i : -1)
+        .filter(i => i !== -1);
+
+      if (selectedIndices.length === 0) {
+        showToast('请先选择至少一页', 'warning');
+        return;
+      }
+
+      const exportPptx = document.getElementById('exportPptx').checked;
+      const exportPng = document.getElementById('exportPng').checked;
+      const exportPdf = document.getElementById('exportPdf').checked;
+      const splitMode = document.getElementById('splitMode').value;
+
+      if (!exportPptx && !exportPng && !exportPdf) {
+        showToast('请至少选择一种导出格式', 'warning');
+        return;
+      }
+
+      AppState.isExporting = true;
+      $exportModal.classList.add('show');
+
+      try {
+        const zip = new JSZip();
+        AppState.cancelExport = false; // 重置取消标志
+
+        // 若需要 PNG/PDF，需要额外渲染
+        const needsRender = exportPng || exportPdf;
+
+        if (splitMode === 'page') {
+          // ========== 按单页拆分 ==========
+          for (let i = 0; i < selectedIndices.length; i++) {
+            if (AppState.cancelExport) {
+              showToast('已取消导出', 'warning');
+              break;
+            }
+            const slideIdx = selectedIndices[i];
+            const folderName = `page_${String(slideIdx + 1).padStart(3, '0')}`;
+            setExportProgress(
+              (i / selectedIndices.length) * 100,
+              `正在处理第 ${slideIdx + 1} 页 (${i + 1}/${selectedIndices.length})...`
+            );
+
+            // 导出 PPTX
+            if (exportPptx) {
+              const pptxBlob = await extractSlidesToPptx([slideIdx]);
+              zip.file(`${folderName}/slide_${slideIdx + 1}.pptx`, pptxBlob);
+            }
+
+            // 若需要 PNG/PDF，先渲染该页
+            let pngDataUrl = null;
+            if (needsRender) {
+              pngDataUrl = await renderSlideToPng(slideIdx, 2);
+            }
+
+            // 导出 PNG
+            if (exportPng && pngDataUrl) {
+              const pngBlob = dataURLToBlob(pngDataUrl);
+              zip.file(`${folderName}/slide_${slideIdx + 1}.png`, pngBlob);
+            }
+
+            // 导出单页 PDF
+            if (exportPdf && pngDataUrl) {
+              const pdfBlob = await createPdfFromPngs([pngDataUrl]);
+              zip.file(`${folderName}/slide_${slideIdx + 1}.pdf`, pdfBlob);
+            }
+          }
+        } else {
+          // ========== 按章节拆分 ==========
+          const involvedChapters = AppState.chapters.filter(ch =>
+            ch.slideIndices.some(si => selectedIndices.includes(si))
+          );
+
+          for (let c = 0; c < involvedChapters.length; c++) {
+            if (AppState.cancelExport) {
+              showToast('已取消导出', 'warning');
+              break;
+            }
+            const chapter = involvedChapters[c];
+            const chapterSlides = chapter.slideIndices.filter(si => selectedIndices.includes(si));
+            const folderName = `chapter_${String(c + 1).padStart(3, '0')}_${sanitizeFilename(chapter.name)}`;
+
+            setExportProgress(
+              (c / involvedChapters.length) * 100,
+              `正在处理「${chapter.name}」(${c + 1}/${involvedChapters.length})...`
+            );
+
+            // 导出 PPTX（将章节内所有选中页打包为一个 PPTX）
+            if (exportPptx) {
+              const pptxBlob = await extractSlidesToPptx(chapterSlides);
+              zip.file(`${folderName}/${sanitizeFilename(chapter.name)}.pptx`, pptxBlob);
+            }
+
+            // 渲染章节内所有选中的 slide
+            const pngDataUrls = [];
+            if (needsRender) {
+              for (let s = 0; s < chapterSlides.length; s++) {
+                if (AppState.cancelExport) break;
+                const url = await renderSlideToPng(chapterSlides[s], 2);
+                if (url) pngDataUrls.push(url);
+              }
+            }
+
+            // 导出 PNG（每页单独一张）
+            if (exportPng) {
+              pngDataUrls.forEach((url, idx) => {
+                const realIdx = chapterSlides[idx];
+                const pngBlob = dataURLToBlob(url);
+                zip.file(`${folderName}/slide_${realIdx + 1}.png`, pngBlob);
+              });
+            }
+
+            // 导出 PDF（章节内所有页合并为一个 PDF）
+            if (exportPdf && pngDataUrls.length > 0) {
+              const pdfBlob = await createPdfFromPngs(pngDataUrls);
+              zip.file(`${folderName}/${sanitizeFilename(chapter.name)}.pdf`, pdfBlob);
+            }
+          }
+        }
+
+        // 若未取消则执行最终打包
+        if (!AppState.cancelExport) {
+          // 最终打包为 ZIP 并下载
+          setExportProgress(95, '正在打包 ZIP 文件...');
+          const zipBlob = await zip.generateAsync({ type: 'blob' });
+          const zipName = AppState.file.name.replace('.pptx', '') + '_拆分结果.zip';
+          saveAs(zipBlob, zipName);
+
+          setExportProgress(100, '下载完成！');
+          showToast('文件打包下载成功！', 'success');
+        }
+
+      } catch (err) {
+        console.error('导出失败:', err);
+        showToast('导出失败：' + err.message, 'error', 5000);
+      } finally {
+        AppState.isExporting = false;
+        AppState.cancelExport = false;
+        setTimeout(() => {
+          $exportModal.classList.remove('show');
+          setExportProgress(0, '准备中...');
+        }, 800);
+      }
+    }
+
+    document.getElementById('btnDownload').addEventListener('click', downloadPackage);
+
+    /**
+     * 单独下载某一页（使用当前选中的导出格式）
+     * @param {number} idx - 幻灯片索引
+     */
+    async function downloadSingleSlide(idx) {
+      const exportPptx = document.getElementById('exportPptx').checked;
+      const exportPng = document.getElementById('exportPng').checked;
+      const exportPdf = document.getElementById('exportPdf').checked;
+
+      if (!exportPptx && !exportPng && !exportPdf) {
+        showToast('请至少选择一种导出格式', 'warning');
+        return;
+      }
+
+      AppState.isExporting = true;
+      $exportModal.classList.add('show');
+      setExportProgress(10, `正在处理第 ${idx + 1} 页...`);
+
+      try {
+        const baseName = AppState.file.name.replace('.pptx', '') + '_第' + (idx + 1) + '页';
+
+        // 导出 PPTX
+        if (exportPptx) {
+          setExportProgress(30, '正在生成 PPTX...');
+          const pptxBlob = await extractSlidesToPptx([idx]);
+          saveAs(pptxBlob, baseName + '.pptx');
+        }
+
+        // 渲染 PNG（PDF 也需要）
+        let pngDataUrl = null;
+        if (exportPng || exportPdf) {
+          setExportProgress(50, '正在渲染高清图片...');
+          pngDataUrl = await renderSlideToPng(idx, 2);
+        }
+
+        // 导出 PNG
+        if (exportPng && pngDataUrl) {
+          setExportProgress(70, '正在生成 PNG...');
+          const pngBlob = dataURLToBlob(pngDataUrl);
+          saveAs(pngBlob, baseName + '.png');
+        }
+
+        // 导出 PDF
+        if (exportPdf && pngDataUrl) {
+          setExportProgress(85, '正在生成 PDF...');
+          const pdfBlob = await createPdfFromPngs([pngDataUrl]);
+          saveAs(pdfBlob, baseName + '.pdf');
+        }
+
+        setExportProgress(100, '下载完成！');
+        showToast(`第 ${idx + 1} 页下载成功`, 'success');
+
+      } catch (err) {
+        console.error('单独下载失败:', err);
+        showToast('下载失败：' + err.message, 'error', 5000);
+      } finally {
+        AppState.isExporting = false;
+        setTimeout(() => {
+          $exportModal.classList.remove('show');
+          setExportProgress(0, '准备中...');
+        }, 800);
+      }
+    }
+
+    // ==================== 辅助函数 ====================
+
+    /**
+     * 延迟函数
+     * @param {number} ms - 毫秒
+     */
+    function sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    /**
+     * HTML 转义，防止 XSS
+     * @param {string} text - 原始文本
+     */
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    /**
+     * 将 DataURL 转换为 Blob 对象
+     * @param {string} dataURL - 如 data:image/png;base64,xxx
+     * @returns {Blob}
+     */
+    function dataURLToBlob(dataURL) {
+      const arr = dataURL.split(',');
+      const mime = arr[0].match(/:(.*?);/)[1];
+      const bstr = atob(arr[1]);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      return new Blob([u8arr], { type: mime });
+    }
+
+    /**
+     * 清理文件名中的非法字符，用于 ZIP 内部路径
+     * @param {string} name - 原始文件名/章节名
+     * @returns {string} - 清理后的文件名
+     */
+    function sanitizeFilename(name) {
+      return name.replace(/[\\/:*?"<>|]/g, '_').trim() || '未命名';
+    }
+
+    // ==================== 取消导出按钮 ====================
+    document.getElementById('btnCancelExport').addEventListener('click', () => {
+      if (AppState.isExporting) {
+        AppState.cancelExport = true;
+        setExportProgress($modalProgressFill.style.width, '正在取消...');
+      }
+    });
+
+    // ==================== 键盘快捷键 ====================
+    document.addEventListener('keydown', (e) => {
+      // Ctrl+A / Cmd+A 全选（仅在预览区显示时生效，避免与系统快捷键冲突）
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        if ($workspace.classList.contains('show') && document.activeElement.tagName !== 'INPUT') {
+          e.preventDefault();
+          selectAll();
+        }
+      }
+      // Escape 关闭导出弹窗或取消导出
+      if (e.key === 'Escape') {
+        if (AppState.isExporting) {
+          AppState.cancelExport = true;
+        }
+        if ($exportModal.classList.contains('show')) {
+          // 只有非导出中时才允许 Escape 关闭弹窗
+          if (!AppState.isExporting) {
+            $exportModal.classList.remove('show');
+          }
+        }
+      }
+    });
+
+    // ==================== CDN 库加载检测 ====================
+    function checkLibraries() {
+      const libs = [
+        { name: 'JSZip', ok: typeof JSZip !== 'undefined' },
+        { name: 'html2canvas', ok: typeof html2canvas !== 'undefined' },
+        { name: 'jsPDF', ok: typeof window.jspdf !== 'undefined' },
+        { name: 'FileSaver', ok: typeof saveAs !== 'undefined' }
+      ];
+      const missing = libs.filter(l => !l.ok).map(l => l.name);
+      if (missing.length > 0) {
+        console.error('以下库加载失败:', missing.join(', '));
+        showToast('部分依赖库加载失败（' + missing.join(', ') + '），请检查网络连接后刷新页面', 'error', 10000);
+      } else {
+        console.log('所有依赖库加载成功');
+      }
+    }
+
+    // ==================== 初始化 ====================
+    console.log('PPT 课件拆分工具已加载');
+    // 延迟检测 CDN 库，确保异步加载完成
+    setTimeout(checkLibraries, 2000);
+  </script>
+</body>
+</html>

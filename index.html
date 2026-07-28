@@ -1577,30 +1577,194 @@ function renderChapters(chapters, allSlides) {
 }
 
 // ==========================================
-// 核心：按章节拆分生成独立 .pptx（内容完全保留）
+// 核心：按章节拆分生成独立 .pptx（内容完全保留，仅包含该章节引用的资源）
 // ==========================================
+// 判断文件是否为已压缩格式（图片/音视频/Office 文档），这些再用 DEFLATE 压缩无效甚至变大
+function isAlreadyCompressed(path) {
+    return /\.(jpe?g|png|gif|bmp|tiff?|webp|ico|emf|mp4|wmv|avi|mov|mkv|mp3|wav|wma|m4a|ogg|flac|aac|zip|rar|7z|gz|pdf|docx?|xlsx?|pptx?)$/i.test(path);
+}
+
+// 将 rels Target 相对路径解析为 ZIP 内的完整路径
+// 注意：OOXML 中 Target 是相对于 rels 对应的 part 文件的位置，而非 rels 文件本身
+function resolveRelsTarget(target, relsFilePath) {
+    if (!target) return null;
+    // 绝对路径（以 / 开头）
+    if (target.startsWith('/')) return target.replace(/^\/+/, '');
+    // rels 文件路径形如 xxx/_rels/yyy.xml.rels → 对应的 part 是 xxx/yyy.xml
+    const partPath = relsFilePath.replace(/\/_rels\//, '/').replace(/\.rels$/, '');
+    const dir = partPath.replace(/\/[^\/]+$/, ''); // part 所在目录
+    let parts = (dir + '/' + target).split('/');
+    let resolved = [];
+    for (let p of parts) {
+        if (p === '..') resolved.pop();
+        else if (p === '.' || p === '') continue;
+        else resolved.push(p);
+    }
+    return resolved.join('/');
+}
+
 async function createChapterPPTX(chapter) {
     const srcZip = State.zip;
     const newZip = new JSZip();
+
+    // addFile：根据文件类型自动选择压缩方式
+    // 已压缩媒体 → STORE（不重复压缩），XML/文本 → DEFLATE
+    const addFile = (path, data) => {
+        newZip.file(path, data, isAlreadyCompressed(path)
+            ? { compression: 'STORE' }
+            : { compression: 'DEFLATE', compressionOptions: { level: 9 } });
+    };
 
     // 需要保留的 slide 路径和 rId
     const keepPaths = new Set(chapter.slideIndices.map(i => State.allSlides[i].path));
     const keepRIds = new Set(chapter.rIds);
 
-    // 1) 复制所有原始文件（排除目录条目和不需要的 slide）
+    // 收集该章节所有 slide 实际引用的媒体文件（图片、视频等）
+    // 通过解析 slide XML 中的 r:embed / r:link 引用，再查 slide 的 _rels 文件得到真实路径
+    const keepMediaPaths = new Set();
+
+    // 通用：解析一个 XML 文件的所有 r:embed / r:link，返回 rId 集合
+    function collectRIdsFromXml(xmlDoc) {
+        const rNamespace = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+        const rIds = new Set();
+        const embedAttrs = xmlDoc.querySelectorAll('[r\\:embed], [r\\:link]');
+        embedAttrs.forEach(el => {
+            let rId = el.getAttribute('r:embed') || el.getAttribute('r:link');
+            if (!rId) {
+                rId = el.getAttributeNS(rNamespace, 'embed') || el.getAttributeNS(rNamespace, 'link');
+            }
+            if (rId) rIds.add(rId);
+        });
+        // 兜底：正则扫描（防止 DOM 选择器因命名空间问题漏匹配）
+        const xmlText = new XMLSerializer().serializeToString(xmlDoc);
+        const re = /r:(?:embed|link)="([^"]+)"/g;
+        let m;
+        while ((m = re.exec(xmlText)) !== null) rIds.add(m[1]);
+        return rIds;
+    }
+
+    // 通用：查 rels 文件，把 rId 集合映射为完整路径，加入 keepMediaPaths
+    async function collectMediaFromRels(relsFilePath, rIdSet) {
+        const relsFile = srcZip.file(relsFilePath);
+        if (!relsFile) return;
+        const relsText = await relsFile.async('text');
+        const relsDoc = new DOMParser().parseFromString(relsText, 'application/xml');
+        const rels = relsDoc.getElementsByTagName('Relationship');
+        for (let rel of rels) {
+            const id = rel.getAttribute('Id');
+            const target = rel.getAttribute('Target');
+            if (rIdSet.has(id) && target) {
+                const resolved = resolveRelsTarget(target, relsFilePath);
+                if (resolved) keepMediaPaths.add(resolved);
+            }
+        }
+    }
+
+    for (const slideIdx of chapter.slideIndices) {
+        const slide = State.allSlides[slideIdx];
+        const slidePath = slide.path;
+
+        // 1) 解析 slide XML 中所有 r:embed 和 r:link 属性
+        const slideXmlText = await srcZip.file(slidePath).async('text');
+        const slideDoc = new DOMParser().parseFromString(slideXmlText, 'application/xml');
+        const rIds = collectRIdsFromXml(slideDoc);
+
+        // 2) 查找该 slide 的 _rels 文件，把 rId 映射为实际文件路径
+        const relsPath = slidePath.replace(/^(ppt\/slides\/)(slide\d+)\.xml$/, '$1_rels/$2.xml.rels');
+        await collectMediaFromRels(relsPath, rIds);
+    }
+
+    // 额外收集 slideLayout / slideMaster 引用的媒体（母版背景图等共用资源）
+    // 这些文件被全量保留，其引用的媒体也必须保留，否则母版图片会丢失
+    const layoutMasterPaths = [];
+    srcZip.forEach(path => {
+        if (path.match(/^ppt\/slideLayouts\/slideLayout\d+\.xml$/) ||
+            path.match(/^ppt\/slideMasters\/slideMaster\d+\.xml$/)) {
+            layoutMasterPaths.push(path);
+        }
+    });
+    for (const lmPath of layoutMasterPaths) {
+        const lmText = await srcZip.file(lmPath).async('text');
+        const lmDoc = new DOMParser().parseFromString(lmText, 'application/xml');
+        const lmRIds = collectRIdsFromXml(lmDoc);
+        if (lmRIds.size > 0) {
+            const lmRelsPath = lmPath.replace(/^(ppt\/(?:slideLayouts|slideMasters)\/)(slide(?:Layout|Master)\d+)\.xml$/, '$1_rels/$2.xml.rels');
+            await collectMediaFromRels(lmRelsPath, lmRIds);
+        }
+    }
+
+    // 同时需要保留 slideLayout 和 slideMaster（所有章节共用，全部保留）
+    // 以及 theme、notesMaster 等共用文件
+
+    // 1) 复制文件：只保留该章节需要的文件 + 共用文件
+    //    addFile 自动按文件类型选择压缩方式：媒体 STORE，XML DEFLATE level 9
     const copyTasks = [];
     srcZip.forEach((path, entry) => {
-        if (entry.dir) return; // 跳过目录
-        // 如果是 slide 文件且不在保留列表中，跳过
-        if (path.match(/ppt\/slides\/slide\d+\.xml$/) && !keepPaths.has(path)) return;
-        // 异步读取文件内容
-        copyTasks.push(entry.async('uint8array').then(data => newZip.file(path, data)));
+        if (entry.dir) return;
+
+        // 判断文件类型
+        const isSlide = path.match(/^ppt\/slides\/slide\d+\.xml$/);
+        const isSlideRels = path.match(/^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/);
+        const isMedia = path.match(/^ppt\/media\//);
+        const isEmbed = path.match(/^ppt\/embeddings\//);
+        const isNotesSlide = path.match(/^ppt\/notesSlides\/notesSlide\d+\.xml$/);
+        const isNotesSlideRels = path.match(/^ppt\/notesSlides\/_rels\/notesSlide\d+\.xml\.rels$/);
+
+        if (isSlide) {
+            if (keepPaths.has(path)) {
+                copyTasks.push(entry.async('uint8array').then(data => addFile(path, data)));
+            }
+        } else if (isSlideRels) {
+            const slidePath = path.replace(/_rels\//, '').replace(/\.rels$/, '');
+            if (keepPaths.has(slidePath)) {
+                copyTasks.push(entry.async('uint8array').then(data => addFile(path, data)));
+            }
+        } else if (isMedia || isEmbed) {
+            if (keepMediaPaths.has(path)) {
+                copyTasks.push(entry.async('uint8array').then(data => addFile(path, data)));
+            }
+        } else if (isNotesSlide) {
+            const match = path.match(/notesSlide(\d+)\.xml$/);
+            if (match) {
+                const notesNum = parseInt(match[1]);
+                let shouldKeep = false;
+                for (const slideIdx of chapter.slideIndices) {
+                    const slideMatch = State.allSlides[slideIdx].path.match(/slide(\d+)\.xml$/);
+                    if (slideMatch && parseInt(slideMatch[1]) === notesNum) {
+                        shouldKeep = true;
+                        break;
+                    }
+                }
+                if (shouldKeep) {
+                    copyTasks.push(entry.async('uint8array').then(data => addFile(path, data)));
+                }
+            }
+        } else if (isNotesSlideRels) {
+            const match = path.match(/notesSlide(\d+)\.xml\.rels$/);
+            if (match) {
+                const notesNum = parseInt(match[1]);
+                let shouldKeep = false;
+                for (const slideIdx of chapter.slideIndices) {
+                    const slideMatch = State.allSlides[slideIdx].path.match(/slide(\d+)\.xml$/);
+                    if (slideMatch && parseInt(slideMatch[1]) === notesNum) {
+                        shouldKeep = true;
+                        break;
+                    }
+                }
+                if (shouldKeep) {
+                    copyTasks.push(entry.async('uint8array').then(data => addFile(path, data)));
+                }
+            }
+        } else {
+            // 其他文件全部保留：[Content_Types].xml、presentation.xml、rels、theme、slideMaster、slideLayout 等
+            copyTasks.push(entry.async('uint8array').then(data => addFile(path, data)));
+        }
     });
     await Promise.all(copyTasks);
 
     const serializer = new XMLSerializer();
 
-    // 2) 更新 presentation.xml：移除不属于本章节的 sldId，移除 sectionLst
+    // 2) 更新 presentation.xml：移除不属于本章节的 sldId，只保留当前章节的分节
     const presText = await newZip.file('ppt/presentation.xml').async('text');
     const presDoc = new DOMParser().parseFromString(presText, 'application/xml');
     if (!checkParseError(presDoc)) {
@@ -1614,10 +1778,47 @@ async function createChapterPPTX(chapter) {
                 if (!keepRIds.has(rId)) sldIdLst.removeChild(item);
             }
         }
-        // 移除整个 sectionLst（拆分后的单章节不需要分节信息）
-        const secLst = presDoc.getElementsByTagName('p:sectionLst')[0];
-        if (secLst) secLst.parentNode.removeChild(secLst);
-        newZip.file('ppt/presentation.xml', serializer.serializeToString(presDoc));
+        // 处理分节信息：只保留当前章节的 section，移除其他章节
+        // PowerPoint 分节可能使用 p:sectionLst 或 p14:sectionLst（在 mc:AlternateContent 内），
+        // 必须按 localName 通用匹配，不能仅用 getElementsByTagName('p:sectionLst')
+        const keepSlideIdSet = new Set((chapter.slideIds || []).map(String));
+        const allElems = presDoc.getElementsByTagName('*');
+        const sectionLstElems = [];
+        for (let i = 0; i < allElems.length; i++) {
+            if (allElems[i].localName === 'sectionLst') sectionLstElems.push(allElems[i]);
+        }
+        for (const sLst of sectionLstElems) {
+            // 收集所有 section 子元素
+            const secElems = [];
+            for (let c = sLst.firstChild; c; c = c.nextSibling) {
+                if (c.localName === 'section') secElems.push(c);
+            }
+            for (const sec of secElems) {
+                const secName = sec.getAttribute('name');
+                if (secName === chapter.name) {
+                    // 保留此 section，但更新其 sldIdLst，只包含当前章节的 slide
+                    for (let child = sec.firstChild; child; child = child.nextSibling) {
+                        if (child.localName === 'sldIdLst') {
+                            const sldIdEls = [];
+                            for (let s = child.firstChild; s; s = s.nextSibling) {
+                                if (s.localName === 'sldId') sldIdEls.push(s);
+                            }
+                            for (const sldIdEl of sldIdEls) {
+                                const sid = sldIdEl.getAttribute('id');
+                                if (sid && !keepSlideIdSet.has(sid)) {
+                                    child.removeChild(sldIdEl);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                } else {
+                    // 移除非当前章节的 section
+                    sLst.removeChild(sec);
+                }
+            }
+        }
+        addFile('ppt/presentation.xml', serializer.serializeToString(presDoc));
     }
 
     // 3) 更新关系文件：移除已删除 slide 的引用
@@ -1633,29 +1834,52 @@ async function createChapterPPTX(chapter) {
                 if (!keepPaths.has(fullPath)) rel.parentNode.removeChild(rel);
             }
         }
-        newZip.file(relsPath, serializer.serializeToString(relsDoc));
+        addFile(relsPath, serializer.serializeToString(relsDoc));
     }
 
-    // 4) 更新 [Content_Types].xml：移除已删除 slide 的 Override
+    // 4) 更新 [Content_Types].xml：移除已删除 slide 和 notesSlide 的 Override
     const ctText = await newZip.file('[Content_Types].xml').async('text');
     const ctDoc = new DOMParser().parseFromString(ctText, 'application/xml');
     if (!checkParseError(ctDoc)) {
         const overrides = Array.from(ctDoc.getElementsByTagName('Override'));
         for (const ov of overrides) {
             const part = ov.getAttribute('PartName');
-            if (part && part.match(/\/slides\/slide\d+\.xml$/)) {
+            if (!part) continue;
+            // 移除已删除 slide 的 Override
+            if (part.match(/\/slides\/slide\d+\.xml$/)) {
                 const p = part.replace(/^\/+/, '');
-                if (!keepPaths.has(p)) ov.parentNode.removeChild(ov);
+                if (!keepPaths.has(p)) {
+                    ov.parentNode.removeChild(ov);
+                    continue;
+                }
+            }
+            // 移除已删除 notesSlide 的 Override
+            if (part.match(/\/notesSlides\/notesSlide\d+\.xml$/)) {
+                const p = part.replace(/^\/+/, '');
+                if (!newZip.file(p)) {
+                    ov.parentNode.removeChild(ov);
+                }
             }
         }
-        newZip.file('[Content_Types].xml', serializer.serializeToString(ctDoc));
+        addFile('[Content_Types].xml', serializer.serializeToString(ctDoc));
     }
 
     // 5) 生成标准 .pptx Blob
-    return await newZip.generateAsync({
+    //    全局默认 DEFLATE level 9（各文件已通过 addFile 单独设置压缩方式，此处为兜底）
+    const blob = await newZip.generateAsync({
         type: 'blob',
-        mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+        mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 9 }
     });
+
+    // 体积诊断日志（按需在浏览器控制台查看）
+    const origSize = State.file ? State.file.size : 0;
+    console.log(`[体积诊断] 章节「${chapter.name}」: ${chapter.slideIndices.length} 页, ` +
+        `原始文件 ${Math.round(origSize / 1024)} KB → 拆分后 ${Math.round(blob.size / 1024)} KB ` +
+        `(${(blob.size / origSize * 100).toFixed(1)}%)`);
+
+    return blob;
 }
 
 // ==========================================
